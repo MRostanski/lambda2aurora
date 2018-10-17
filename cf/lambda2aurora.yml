@@ -1,0 +1,119 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  vpc:
+    Type: AWS::EC2::VPC::Id
+  dbName:
+    Type: String
+    Default: test
+  dbAllocatedStorage:
+    Type: Number
+    Default: 20
+  dbInstanceClass:
+    Type: String
+    Default: db.t2.small
+  dbUser:
+    Type: String
+    Default: admin
+  dbPassword:
+    Type: String
+    Default: test1234
+  dbSubnets:
+    Type: List<AWS::EC2::Subnet::Id>
+Resources:
+  lambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:*
+            - ec2:DescribeNetworkInterfaces
+            - ec2:CreateNetworkInterface
+            - ec2:DeleteNetworkInterface
+            Resource: '*'
+  lambdaSecurityGroup: 
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: enable outbound traffic only
+      Tags:
+        - 
+          Key: Name
+          Value: !Sub lambda-sg-${AWS::StackName} 
+      VpcId: !Ref vpc
+  dbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: allow access to DB
+      Tags:
+        - 
+          Key: Name
+          Value: !Sub sg-db-${AWS::StackName} 
+      VpcId: !Ref vpc 
+  lambdaSGIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      FromPort : 3306
+      ToPort: 3306
+      GroupId: !Ref dbSecurityGroup
+      SourceSecurityGroupId: !Ref lambdaSecurityGroup
+  dbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      SubnetIds: !Ref dbSubnets 
+      DBSubnetGroupDescription: DB subnet group
+  dbCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      Engine: aurora
+      DatabaseName: !Ref dbName
+      MasterUsername: !Ref dbUser
+      MasterUserPassword: !Ref dbPassword
+      DBSubnetGroupName: !Ref dbSubnetGroup
+      VpcSecurityGroupIds: [!Sub '${dbSecurityGroup}']
+  db:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: aurora
+      DBClusterIdentifier: !Ref dbCluster
+      DBSubnetGroupName: !Ref dbSubnetGroup
+      DBInstanceClass: !Ref dbInstanceClass
+  lambda: 
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: lambda2aurora
+      Handler: cloud.developing.aurora.Main::run
+      Runtime: java8
+      Code: 
+        S3Bucket: lambda-jars
+        S3Key: lambda2aurora.zip
+      MemorySize: 512
+      Timeout: 300
+      ReservedConcurrentExecutions: 1
+      Role: !Sub ${lambdaExecutionRole.Arn} 
+      VpcConfig:
+        SubnetIds: !Ref dbSubnets
+        SecurityGroupIds:
+          - !Ref lambdaSecurityGroup
+      Environment:
+        Variables:
+          RDS_DBNAME: !Ref dbName
+          RDS_HOSTNAME: !Sub ${db.Endpoint.Address}
+          RDS_USERNAME: !Ref dbUser
+          RDS_PORT: !Sub ${db.Endpoint.Port}
+          RDS_PASSWORD: !Ref dbPassword
+    DependsOn: db
